@@ -33,12 +33,39 @@ meta:
   trial_budget: 30
   registered_trials: 21
   universe_definition: >
-    liquid_50 -- the 50 US equities with the highest median dollar volume over
-    the 30 calendar days ENDING at the backfill start date, selected from
-    Alpaca's currently-tradable US equity list. Ranking is as-of the start date
-    so liquidity selection contains no look-ahead. The candidate pool is
-    current membership, so names delisted since the start date are absent; this
-    survivorship bias is documented and not fixable with this data source.
+    liquid_100 -- the 100 US OPERATING COMPANIES with the highest median dollar
+    volume over the 30 calendar days ENDING at the backfill start date
+    (2025-08-30), selected from Alpaca's currently-tradable US equity list.
+    Ranking is as-of the start date, so liquidity selection contains no
+    look-ahead. Held fixed for the whole backfill.
+
+    ETFs, ETNs, closed-end funds and leveraged/inverse products are EXCLUDED.
+    Amended before any data was analysed; the unfiltered ranking returned ~40%
+    funds, including TQQQ, SQQQ, SOXL, SOXS, TSLL and NVDL. Three independent
+    reasons, each sufficient:
+      (a) A 3x daily ETF is a deterministic path-dependent function of an index
+          with a mechanical volatility-decay drift. Reversion measured on it is
+          a rebalancing artifact, not the liquidity provision H001 names.
+      (b) SPY, VOO and IVV are three near-identical securities tracking one
+          index. Cross-sectional demeaning against a panel containing them
+          makes the market factor partly a function of the assets being
+          residualised against it.
+      (c) SGOV is a T-bill fund. Standardising its returns divides by a number
+          close to zero.
+    Every registered mechanism describes single-name equity microstructure --
+    retail marketable flow, institutional order working, resting stop orders.
+    Funds have creation/redemption arbitrage instead: different process,
+    different participants.
+
+    Bars are regular-session only (09:30-16:00 America/New_York, 390 one-minute
+    bars per full session). Extended-hours bars are excluded: they are thin,
+    their spreads are several times the regular-session NBBO, and including
+    them would break the 390-bar session length that every effective-sample-size
+    figure in this phase divides by.
+
+    Residual survivorship bias: the candidate pool is current membership, so
+    names delisted between 2025-08-30 and today are absent. Not fixable with
+    this data source; reported in the README rather than hidden.
   horizons_rationale: >
     30 bars (30 min) is short enough that microstructure effects dominate and
     long enough to be executable. 130 bars (~2.2 hrs) is the holding period the
@@ -58,7 +85,7 @@ hypotheses:
     signal: zscore_reversion
     params: {window: 20, clip: 2.0}
     horizons_bars: [30, 130, 390]
-    universe: liquid_50
+    universe: liquid_100
     prediction: "residual IC > 0.02 at h=130 with HAC t > 2 and BH-corrected p < 0.05"
     mechanism: >
       Intraday liquidity provision. Marketable order flow -- retail market
@@ -79,7 +106,7 @@ hypotheses:
     signal: zscore_momentum
     params: {window: 60, clip: 2.0}
     horizons_bars: [30, 130, 390]
-    universe: liquid_50
+    universe: liquid_100
     prediction: >
       residual IC <= 0 at h=30 and h=130. This is a directional prediction of
       FAILURE, registered as such: at intraday horizons microstructure
@@ -101,7 +128,7 @@ hypotheses:
     signal: timeseries_momentum
     params: {window: 60}
     horizons_bars: [30, 130, 390]
-    universe: liquid_50
+    universe: liquid_100
     prediction: "residual IC indistinguishable from zero at all three horizons"
     mechanism: >
       Persistent order-flow imbalance from institutional position building. A
@@ -122,7 +149,7 @@ hypotheses:
     signal: ma_crossover
     params: {fast: 10, slow: 50}
     horizons_bars: [30, 130, 390]
-    universe: liquid_50
+    universe: liquid_100
     prediction: "residual IC tracks H003 within 0.01; no independent signal"
     mechanism: >
       The same economic claim as H003 -- persistent order-flow imbalance --
@@ -141,7 +168,7 @@ hypotheses:
     signal: vol_breakout
     params: {window: 20}
     horizons_bars: [30, 130, 390]
-    universe: liquid_50
+    universe: liquid_100
     prediction: "residual IC > 0 at h=30 only; decaying to zero by h=390"
     mechanism: >
       Stop-order cascades. Price leaving a well-established range triggers
@@ -162,7 +189,7 @@ hypotheses:
     signal: random_signal
     params: {seed: 0}
     horizons_bars: [30, 130, 390]
-    universe: liquid_50
+    universe: liquid_100
     prediction: "residual IC = 0 within HAC error at every horizon"
     mechanism: >
       CONTROL. No mechanism by construction -- the signal is independent of
@@ -178,7 +205,7 @@ hypotheses:
     signal: always_long
     params: {}
     horizons_bars: [30, 130, 390]
-    universe: liquid_50
+    universe: liquid_100
     prediction: >
       raw IC undefined (zero variance signal); residual IC = 0 by construction,
       since a constant signal has no cross-sectional variation and residual

@@ -52,6 +52,9 @@ from .config import (
 
 __all__ = [
     "fetch_history",
+    "filter_regular_hours",
+    "is_fund",
+    "FUND_KEYWORDS",
     "market_clock",
     "market_calendar",
     "candidate_symbols",
@@ -147,6 +150,7 @@ def fetch_history(
     credentials: Credentials | None = None,
     allow_iex: bool = False,
     symbol_chunk: int = 100,
+    regular_hours_only: bool = True,
     client: StockHistoricalDataClient | None = None,
 ) -> pd.DataFrame:
     """Fetch historical bars as a long DataFrame with one row per (symbol, bar).
@@ -207,11 +211,35 @@ def fetch_history(
             bars[column] = pd.NA
     bars["feed"] = feed.value
     bars["timestamp"] = pd.to_datetime(bars["timestamp"], utc=True)
-    return (
-        bars[BAR_COLUMNS]
-        .sort_values(["symbol", "timestamp"])
-        .reset_index(drop=True)
-    )
+    bars = bars[BAR_COLUMNS].sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+    if regular_hours_only and not daily:
+        bars = filter_regular_hours(bars)
+    return bars
+
+
+def filter_regular_hours(bars: pd.DataFrame) -> pd.DataFrame:
+    """Keep only bars inside the 09:30-16:00 America/New_York regular session.
+
+    Alpaca returns extended-hours bars by default. Three reasons they must go
+    before any IC is computed:
+
+    - A session is 390 one-minute bars only if extended hours are excluded.
+      Every effective-sample-size calculation in this phase divides by that
+      number, and the forward-return session masking depends on it.
+    - Pre- and post-market bars are thin, with spreads several times the
+      regular-session NBBO. A reversion signal measured across them is largely
+      measuring the bid-ask bounce of an untradeable book.
+    - Extended-hours coverage is irregular, so including it makes the panel
+      unbalanced in a way that varies by symbol and by day.
+
+    The last regular bar is timestamped 15:59 (it covers 15:59-16:00), so the
+    window is ``[09:30, 16:00)`` and a full session yields exactly 390 bars.
+    """
+    if bars.empty:
+        return bars
+    eastern = bars["timestamp"].dt.tz_convert("America/New_York")
+    minute_of_day = eastern.dt.hour * 60 + eastern.dt.minute
+    return bars[(minute_of_day >= 9 * 60 + 30) & (minute_of_day < 16 * 60)].reset_index(drop=True)
 
 
 def market_clock(
@@ -261,10 +289,62 @@ def market_calendar(
     return frame
 
 
+#: Name fragments that identify a pooled investment vehicle rather than an
+#: operating company. Matched case-insensitively against Alpaca's asset name.
+FUND_KEYWORDS: tuple[str, ...] = (
+    # Issuers
+    "proshares", "direxion", "invesco", "ishares", "vanguard", "spdr",
+    "state street", "global x", "vaneck", "first trust", "wisdomtree",
+    "schwab strategic", "grayscale", "bitwise", "xtrackers", "amplify",
+    "roundhill", "yieldmax", "defiance", "graniteshares", "simplify",
+    "innovator", "pacer", "ark ", "janus henderson", "goldman sachs etf",
+    "jpmorgan etf", "fidelity covington", "franklin", "tidal", "rex shares",
+    "t-rex", "volatility shares",
+    # Structure
+    " etf", "etf ", "exchange traded", " etn", "index fund", "index trust",
+    "select sector", "unit trust", " trust,", "trust shares", " fund",
+    # Leverage and inverse -- mechanically different instruments
+    "ultrapro", "ultrashort", "ultra ", "bull 3x", "bear 3x", "bull 2x",
+    "bear 2x", "1.5x", " 2x ", " 3x ", "-1x", "inverse", "leveraged",
+    "daily ", "short qqq", "long qqq",
+)
+
+
+def is_fund(name: str | None) -> bool:
+    """True when an asset name identifies a fund, ETF, ETN or leveraged product.
+
+    Funds are excluded from the research universe for three separate reasons,
+    each sufficient on its own:
+
+    - **Leveraged and inverse products are the wrong instrument.** A 3x daily
+      ETF is a deterministic path-dependent function of an index with a
+      mechanical volatility-decay drift. Any mean reversion measured on it is a
+      rebalancing artifact, not the liquidity provision that H001 names as its
+      mechanism.
+    - **Index funds are the market factor.** Residualising by cross-sectional
+      demeaning against a panel that contains SPY, VOO and IVV -- three
+      near-identical securities tracking the same index -- makes the factor
+      partly a function of the assets being residualised, and the residuals
+      degenerate.
+    - **Bond and cash funds have near-zero return variance.** SGOV is a T-bill
+      fund; standardising its returns divides by something close to zero.
+
+    Every pre-registered mechanism describes single-name equity microstructure:
+    retail marketable flow, institutional order working, resting stop orders.
+    Funds have creation/redemption arbitrage instead, which is a different
+    process with different participants.
+    """
+    if not name:
+        return False
+    lowered = f" {str(name).lower()} "
+    return any(keyword in lowered for keyword in FUND_KEYWORDS)
+
+
 def candidate_symbols(
     credentials: Credentials | None = None,
     base_url: str = PAPER_BASE_URL,
     exclude_otc: bool = True,
+    exclude_funds: bool = True,
 ) -> list[str]:
     """Currently-tradable US equity symbols, as Alpaca reports them today.
 
@@ -289,6 +369,8 @@ def candidate_symbols(
         if not asset.tradable or not asset.symbol.isalpha():
             continue
         if exclude_otc and str(getattr(asset, "exchange", "")).upper().endswith("OTC"):
+            continue
+        if exclude_funds and is_fund(getattr(asset, "name", None)):
             continue
         symbols.append(asset.symbol)
     return sorted(set(symbols))
