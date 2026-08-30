@@ -248,7 +248,14 @@ class FeatureStore:
         index = panel.index
         position = pd.Series(np.arange(len(index)), index=index)
         safe = np.minimum(position.to_numpy() + horizon + embargo, len(index) - 1)
-        out["embargo_until"] = index[safe[position.reindex(out["timestamp"]).to_numpy()]]
+        located = position.reindex(out["timestamp"])
+        if located.isna().any():
+            raise ValueError(
+                f"{int(located.isna().sum())} forward-return timestamps are absent from "
+                "the price index. reindex would map them to NaN and the embargo "
+                "boundary would be silently wrong."
+            )
+        out["embargo_until"] = index[safe[located.to_numpy().astype(int)]]
         out.attrs["horizon"] = horizon
         out.attrs["embargo"] = embargo
         return out

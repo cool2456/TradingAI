@@ -42,6 +42,7 @@ turnover-of-``held`` formulation guarantees.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
@@ -160,6 +161,23 @@ def run_backtest(
     if cost_bps < 0:
         raise ValueError("cost_bps must be non-negative")
 
+    # reindex fills unmatched columns with NaN, so a positions frame whose
+    # symbols do not match the price panel produces an all-NaN book, a
+    # zero-return backtest and no error at all. Refuse rather than reindex.
+    shared = positions.columns.intersection(prices.columns)
+    if len(shared) == 0:
+        raise ValueError(
+            f"positions and prices share no columns. positions has "
+            f"{sorted(positions.columns)[:5]}, prices has {sorted(prices.columns)[:5]}. "
+            "Reindexing would silently produce an empty book and a flat equity curve."
+        )
+    if len(shared) < len(prices.columns):
+        warnings.warn(
+            f"positions cover {len(shared)} of {len(prices.columns)} priced symbols; "
+            f"{sorted(set(prices.columns) - set(shared))[:5]} will be held flat.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     positions = positions.reindex(index=prices.index, columns=prices.columns)
 
     returns = prices.pct_change()
@@ -380,7 +398,7 @@ def run_regime_portfolio(
     prices: pd.DataFrame,
     signals: Sequence[Any] | None = None,
     weight_map: dict[str, dict[str, float]] | None = None,
-    tier: int = 2,
+    tier: int = 0,
     budget: int = 3,
     cost_bps: float = 2.0,
     target_ann_vol: float = 0.10,
@@ -403,9 +421,16 @@ def run_regime_portfolio(
     sees the positions the book will actually hold. Doing it the other way
     round would let the sizing layer silently undo the budget's decisions.
 
-    The default configuration uses Tier 1 (volatility sizing) and Tier 2
-    (trend/chop weights). Tier 3 requires ``allow_tier3=True`` and is passed
-    straight through to :func:`quantlab.regime.classify`.
+    **The default is ``tier=0``: fixed weights, no regime conditioning.** The
+    Phase 1 evaluation found Tier 2 conditioning worked only on the generator
+    constructed to contain its assumption and lost significantly on GBM and
+    GARCH, and the trend/chop label's own IC failed at alpha=0.05 with
+    HAC t=1.81. Tier 2 remains implemented and tested but is not deployed;
+    re-enabling it requires the upper-bound test to clear first.
+
+    Tier 1 (volatility-driven sizing) is applied at every tier including 0 --
+    it governs ``vol_target`` rather than strategy weights, and is the one
+    tier the evidence supports. Tier 3 requires ``allow_tier3=True``.
     """
     from .allocator import apply_trade_budget, constant_edge, regime_weights, resolve_weight_map
     from .regime import classify
@@ -434,10 +459,21 @@ def run_regime_portfolio(
     # strategy weights are correct there and are chosen explicitly rather than
     # arrived at by a failed lookup. Tiers 2 and 3 must actually cover the
     # labels the classifier emits.
-    if tier == 1:
+    if tier in (0, 1):
+        # Tier 0 has one regime; Tier 1 conditions sizing rather than weights.
+        # Either way the strategy weights are uniform, chosen explicitly rather
+        # than arrived at by a lookup that happened to miss.
         resolved, coverage = {}, 1.0
     else:
         resolved, coverage = resolve_weight_map(regime, weight_map)
+        if 0.0 < coverage < 1.0:
+            warnings.warn(
+                f"the weight map covers only {coverage:.1%} of labelled bars at "
+                f"tier {tier}; the remainder fall back to equal weight. That is a "
+                "partially fixed-weight book being reported as regime-conditional.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         if coverage == 0.0:
             raise ValueError(
                 f"the weight map covers none of the tier-{tier} regime labels "

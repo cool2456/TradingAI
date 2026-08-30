@@ -59,6 +59,7 @@ sample.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
@@ -119,6 +120,30 @@ def regime_weights(
     strategies = list(strategies)
     if not strategies:
         raise ValueError("no strategies given and weight_map is empty")
+
+    # A strategy named in weight_map but absent from `strategies` would be
+    # silently dropped, and one present in `strategies` but absent from a
+    # regime's row would silently receive weight 0.0. Both are typos that
+    # produce a valid, wrong allocation with no error -- the same failure class
+    # as the Tier 3 compound-label bug. Named misspellings are refused.
+    named = {s for row in weight_map.values() for s in row}
+    unknown = named - set(strategies)
+    if unknown:
+        raise ValueError(
+            f"weight_map names strategies that do not exist: {sorted(unknown)}. "
+            f"Known strategies are {sorted(strategies)}. A misspelled name would "
+            "otherwise be dropped silently and its intended weight lost."
+        )
+    for regime, row in weight_map.items():
+        absent = set(strategies) - set(row)
+        if absent:
+            warnings.warn(
+                f"regime {regime!r} assigns no weight to {sorted(absent)}; they will "
+                "be held at 0.0. If that is deliberate, state it explicitly by "
+                "listing them with a weight of 0.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     if default is None:
         default = {s: 1.0 / len(strategies) for s in strategies}

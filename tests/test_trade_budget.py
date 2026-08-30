@@ -391,3 +391,108 @@ def test_tier1_uses_equal_strategy_weights_by_design() -> None:
         sharpe(result.fixed_weight.net_returns)
     )
     assert result.config["weight_map_coverage"] == 1.0
+
+
+# ==========================================================================
+# Phase 2: silent identity substitution audit
+#
+# The Tier 3 bug was arithmetically valid, wrongly labelled, and raised
+# nothing. These lock the same failure class out of the remaining lookups.
+# ==========================================================================
+
+
+def test_misspelled_strategy_in_weight_map_is_refused() -> None:
+    """A typo must not silently become a zero weight."""
+    labels = pd.Series(pd.Categorical(["trend", "chop"], categories=["trend", "chop"]))
+    with pytest.raises(ValueError, match="do not exist"):
+        regime_weights(
+            labels,
+            {"trend": {"mom": 0.5, "revrsion": 0.5}, "chop": {"mom": 0.5, "rev": 0.5}},
+            strategies=["mom", "rev"],
+        )
+
+
+def test_strategy_omitted_from_a_regime_warns() -> None:
+    """Held at zero is a defensible choice, but it must be a stated one."""
+    labels = pd.Series(pd.Categorical(["trend", "chop"], categories=["trend", "chop"]))
+    with pytest.warns(RuntimeWarning, match="assigns no weight"):
+        weights = regime_weights(
+            labels, {"trend": {"mom": 1.0}, "chop": {"mom": 0.5, "rev": 0.5}},
+            strategies=["mom", "rev"],
+        )
+    assert weights.iloc[0].tolist() == [1.0, 0.0]
+
+
+def test_backtest_refuses_positions_that_share_no_symbols_with_prices() -> None:
+    """Reindexing mismatched columns yields an all-NaN book and a flat curve."""
+    from quantlab.engine import run_backtest
+    from quantlab.simulate import gbm as _gbm
+
+    prices = _gbm(n_steps=200, n_assets=3, seed=1)
+    positions = prices.rename(columns=lambda c: c + "_typo") * 0 + 1.0
+    with pytest.raises(ValueError, match="share no columns"):
+        run_backtest(prices, positions)
+
+
+def test_backtest_warns_when_positions_cover_only_some_symbols() -> None:
+    from quantlab.engine import run_backtest
+    from quantlab.simulate import gbm as _gbm
+
+    prices = _gbm(n_steps=200, n_assets=3, seed=1)
+    partial = (prices * 0 + 1.0).iloc[:, :2]
+    with pytest.warns(RuntimeWarning, match="will be held flat"):
+        run_backtest(prices, partial)
+
+
+def test_partial_weight_map_coverage_warns() -> None:
+    """Covering some labels and not others is a partly fixed-weight book."""
+    from quantlab.engine import run_regime_portfolio
+    from quantlab.simulate import regime_switching as rs
+
+    prices = rs(n_steps=1200, n_assets=2, seed=3)
+    # Cover 'trend' but not 'chop'; chop bars silently fall back to equal weight.
+    weight_map = {
+        "trend": {name: 0.2 for name in
+                  ["zscore_reversion", "zscore_momentum", "timeseries_momentum",
+                   "ma_crossover", "vol_breakout"]}
+    }
+    with pytest.warns(RuntimeWarning, match="covers only"):
+        run_regime_portfolio(prices, tier=2, weight_map=weight_map, regime_min_periods=60)
+
+
+# --------------------------------------------------- tier 0 is the default
+
+
+def test_tier_zero_is_the_default_and_means_fixed_weights() -> None:
+    """Phase 1 found Tier 2 unsupported; unconditional allocation is the default.
+
+    Tier 2 stays implemented and tested. It is simply not what runs unless
+    somebody asks for it and the upper-bound test has cleared.
+    """
+    from quantlab.engine import run_regime_portfolio
+    from quantlab.metrics import sharpe
+    from quantlab.regime import classify
+    from quantlab.simulate import regime_switching as rs
+
+    prices = rs(n_steps=1500, n_assets=3, seed=5)
+    assert classify(prices).unique().tolist() == ["unconditional"]
+
+    default = run_regime_portfolio(prices)
+    assert default.config["tier"] == 0
+    assert default.config["n_regimes"] == 1
+    assert sharpe(default.regime_conditional.net_returns) == pytest.approx(
+        sharpe(default.fixed_weight.net_returns)
+    )
+
+
+def test_tier_two_still_works_when_asked_for_explicitly() -> None:
+    from quantlab.engine import run_regime_portfolio
+    from quantlab.metrics import sharpe
+    from quantlab.simulate import regime_switching as rs
+
+    prices = rs(n_steps=1500, n_assets=3, seed=5)
+    tier2 = run_regime_portfolio(prices, tier=2)
+    assert tier2.config["n_regimes"] == 2
+    assert sharpe(tier2.regime_conditional.net_returns) != pytest.approx(
+        sharpe(tier2.fixed_weight.net_returns), abs=1e-9
+    )

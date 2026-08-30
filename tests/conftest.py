@@ -47,3 +47,55 @@ def t_stat_of_mean(values: np.ndarray | list[float]) -> float:
     if arr.size < 2 or arr.std(ddof=1) == 0:
         return float("nan")
     return float(arr.mean() / (arr.std(ddof=1) / np.sqrt(arr.size)))
+
+
+# --------------------------------------------------------------------------
+# Phase 2: synthetic panels for IC calibration
+# --------------------------------------------------------------------------
+
+
+def synthetic_panel(
+    n_bars: int,
+    n_symbols: int,
+    horizon: int,
+    signal_window: int,
+    seed: int,
+    planted_ic: float = 0.0,
+    return_correlation: float = 0.0,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """A ``(signal, forward_return)`` panel pair with a known planted IC.
+
+    The signal is a trailing rolling mean, which is the shape of every signal in
+    :mod:`quantlab.signals` and -- crucially -- is strongly autocorrelated. An
+    iid signal would show no variance inflation at all regardless of how much
+    the forward returns overlap, because the product's autocovariance is the
+    product of the two series' autocovariances.
+
+    ``forward_return[t] = sum(r[t+1 .. t+horizon])``, so consecutive
+    observations share ``horizon - 1`` periods exactly as they do on real bars.
+    """
+    rng = np.random.default_rng(seed)
+    common = rng.normal(size=(n_bars, 1))
+    idio = rng.normal(size=(n_bars, n_symbols))
+    if return_correlation > 0:
+        raw = (
+            np.sqrt(return_correlation) * common
+            + np.sqrt(1.0 - return_correlation) * idio
+        )
+    else:
+        raw = idio
+
+    index = pd.date_range("2024-01-01", periods=n_bars, freq="min", tz="UTC")
+    columns = [f"S{i}" for i in range(n_symbols)]
+    returns = pd.DataFrame(raw, index=index, columns=columns)
+    forward = returns.shift(-1).rolling(horizon).sum().shift(-(horizon - 1))
+
+    base = pd.DataFrame(rng.normal(size=(n_bars, n_symbols)), index=index, columns=columns)
+    signal = base.rolling(signal_window).mean()
+
+    if planted_ic:
+        stacked = forward.stack()
+        z_forward = (forward - stacked.mean()) / stacked.std()
+        z_noise = (signal - signal.stack().mean()) / signal.stack().std()
+        signal = planted_ic * z_forward + np.sqrt(max(1.0 - planted_ic**2, 0.0)) * z_noise
+    return signal, forward

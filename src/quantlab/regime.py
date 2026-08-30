@@ -50,8 +50,10 @@ __all__ = [
     "hypothesis_cost",
     "VOL_LABELS",
     "TREND_LABELS",
+    "UNCONDITIONAL_LABEL",
 ]
 
+UNCONDITIONAL_LABEL = "unconditional"
 VOL_LABELS = ("low_vol", "normal_vol", "high_vol")
 TREND_LABELS = ("chop", "trend")
 
@@ -166,7 +168,7 @@ def autocorr_regime(prices: pd.DataFrame, window: int = 60) -> pd.Series:
 
 def classify(
     prices: pd.DataFrame,
-    tier: Literal[1, 2, 3] = 2,
+    tier: Literal[0, 1, 2, 3] = 0,
     vol_window: int = 20,
     trend_window: int = 20,
     autocorr_window: int = 60,
@@ -177,6 +179,13 @@ def classify(
 ) -> pd.Series:
     """Categorical regime labels at the requested tier.
 
+    - ``tier=0``: **no regime conditioning.** A single constant label, so the
+      allocator uses one fixed weight vector throughout. This is the default
+      as of Phase 2: the Phase 1 evaluation found Tier 2 conditioning helped
+      only on the generator built to contain its assumption and lost money
+      significantly on GBM (-0.11, t=-3.7) and GARCH (-0.07, t=-2.4), while on
+      Ornstein-Uhlenbeck it converted a standalone +2.73 into -3.08. Until the
+      upper-bound test clears, unconditional allocation is the honest default.
     - ``tier=1``: volatility bucket -- ``low_vol`` / ``normal_vol`` / ``high_vol``.
     - ``tier=2``: trend/chop -- efficiency ratio against its **expanding**
       ``trend_quantile``. An expanding cut point rather than a fixed constant
@@ -192,6 +201,13 @@ def classify(
     ``sqrt(252/200) = 1.1`` annualised -- the estimate is pure noise.  Check
     :func:`regime_sample_counts` before believing anything conditioned on it.
     """
+    if tier == 0:
+        return pd.Series(
+            pd.Categorical(["unconditional"] * len(prices), categories=["unconditional"]),
+            index=prices.index,
+            name="regime",
+        )
+
     if tier == 1:
         return vol_regime(prices, vol_window, quantiles, min_periods).rename("regime")
 
@@ -237,7 +253,7 @@ def classify(
             name="regime",
         )
 
-    raise ValueError(f"tier must be 1, 2 or 3, got {tier}")
+    raise ValueError(f"tier must be 0, 1, 2 or 3, got {tier}")
 
 
 def regime_sample_counts(labels: pd.Series) -> pd.DataFrame:

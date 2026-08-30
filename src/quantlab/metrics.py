@@ -42,6 +42,7 @@ __all__ = [
     "hit_rate",
     "information_coefficient",
     "ICResult",
+    "newey_west_mean_se",
     "deflated_sharpe",
     "expected_max_sharpe",
     "probabilistic_sharpe",
@@ -229,7 +230,7 @@ class ICResult:
         return asdict(self)
 
 
-def _newey_west_mean_se(x: np.ndarray, lags: int) -> float:
+def newey_west_mean_se(x: np.ndarray, lags: int) -> float:
     """Newey-West HAC standard error of the sample mean of ``x``.
 
     ``S = gamma_0 + 2 sum_{l=1}^{L} (1 - l/(L+1)) gamma_l`` with Bartlett
@@ -320,7 +321,7 @@ def information_coefficient(
     hac_lags = min(hac_lags, n - 2)
 
     se_naive = float(1.0 / np.sqrt(n - 2))
-    se_hac = _newey_west_mean_se(products, hac_lags)
+    se_hac = newey_west_mean_se(products, hac_lags)
     t_stat = float(ic / se_hac) if se_hac > 0 else float("nan")
     p_value = float(2.0 * stats.norm.sf(abs(t_stat))) if np.isfinite(t_stat) else float("nan")
     return ICResult(ic, n, se_naive, se_hac, hac_lags, t_stat, p_value, method)
@@ -474,3 +475,7 @@ def summary(
     }
     out["turnover_ann"] = turnover(positions, periods_per_year) if positions is not None else float("nan")
     return out
+
+
+#: Kept for backward compatibility with Phase 1 internal callers.
+_newey_west_mean_se = newey_west_mean_se

@@ -72,7 +72,7 @@ class SessionConfig(BaseModel):
     budget: int = Field(3, ge=0, le=50)
     target_ann_vol: float = Field(0.10, gt=0.0, le=1.0)
     max_leverage: float = Field(3.0, gt=0.0, le=10.0)
-    tier: Literal[1, 2, 3] = 2
+    tier: Literal[0, 1, 2, 3] = 0
     allow_tier3: bool = False
     edge_bps: float = Field(5.0, ge=-50.0, le=200.0)
     min_trade_size: float = Field(0.05, ge=0.0, le=1.0)
@@ -274,6 +274,7 @@ def defaults() -> dict[str, Any]:
         "controls": list(CONTROLS),
         "weight_map": DEFAULT_WEIGHT_MAP,
         "tiers": {
+            "0": "no regime conditioning, fixed weights - THE DEFAULT since Phase 1 found Tier 2 unsupported",
             "1": "volatility regime drives position sizing - well supported",
             "2": "trend/chop regime drives strategy weights - testable but unproven",
             "3": "12 fine-grained regimes drive selection - HIGH OVERFITTING RISK",
