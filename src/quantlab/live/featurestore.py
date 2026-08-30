@@ -213,6 +213,7 @@ class FeatureStore:
         embargo: int | None = None,
         field_name: str = "close",
         within_session: bool = True,
+        entry_lag: int = 1,
         start: date | str | None = None,
         end: date | str | None = None,
         symbols: Sequence[str] | None = None,
@@ -237,7 +238,8 @@ class FeatureStore:
 
         panel = frame.pivot_table(index="timestamp", columns="symbol",
                                   values=field_name, aggfunc="last").sort_index()
-        forward = forward_returns(panel, horizon, within_session=within_session)
+        forward = forward_returns(panel, horizon, within_session=within_session,
+                                  entry_lag=entry_lag)
 
         out = (
             forward.stack(future_stack=True)
@@ -262,19 +264,47 @@ class FeatureStore:
 
 
 def forward_returns(
-    panel: pd.DataFrame, horizon: int, within_session: bool = True
+    panel: pd.DataFrame,
+    horizon: int,
+    within_session: bool = True,
+    entry_lag: int = 1,
 ) -> pd.DataFrame:
-    """``P_{t+h} / P_t - 1`` per column, NaN where the window leaves the session.
+    """``P_{t+lag+h} / P_{t+lag} - 1`` per column, NaN where the window leaves the session.
+
+    Why ``entry_lag`` defaults to 1, not 0
+    --------------------------------------
+    The naive definition ``P_{t+h} / P_t`` uses the same print ``P_t`` that the
+    signal was computed from. On one-minute equity bars that manufactures
+    reversion out of nothing.
+
+    Closing prints alternate between the bid and the ask as buyer- and
+    seller-initiated trades arrive. If bar ``t`` happens to close at the bid,
+    the price looks low, so a z-score reversion signal says buy -- and the
+    forward return measured *from that same low print* is upward-biased,
+    because the next print is more likely to be at the ask. The signal and the
+    return share a common microstructure error term, and their correlation is
+    the bid-ask bounce rather than any economic effect. It is strongest at
+    exactly the short horizons where H001 predicts the most signal.
+
+    Setting ``entry_lag=1`` means the signal is computed from the close of bar
+    ``t`` and the return is measured from the close of bar ``t+1`` onward. The
+    two prices are different prints, the shared bounce term is gone, and the
+    measurement matches what a trader could actually do: decide on a close,
+    transact into the next bar. It is the same lag >= 1 discipline
+    :func:`quantlab.engine.run_backtest` enforces, applied to measurement.
+
+    ``entry_lag=0`` is retained for diagnosis only. The gap between the two is
+    the size of the bounce artifact.
 
     ``within_session=True`` blanks any window that would cross a session
     boundary. A 390-bar forward return starting at 15:50 otherwise prices an
-    overnight gap, which an intraday strategy never holds and cannot earn. That
-    contamination is largest at exactly the longest horizon, where the sample
-    is already smallest.
+    overnight gap, which an intraday strategy never holds and cannot earn.
     """
     if horizon < 1:
         raise ValueError("horizon must be >= 1")
-    forward = panel.shift(-horizon) / panel - 1.0
+    if entry_lag < 0:
+        raise ValueError("entry_lag must be >= 0")
+    forward = panel.shift(-(horizon + entry_lag)) / panel.shift(-entry_lag) - 1.0
 
     if within_session and len(panel):
         # .to_numpy() is load-bearing. session_id returns a Series carrying a
@@ -284,13 +314,16 @@ def forward_returns(
         # Phase 1 regime-label bug: no exception, valid dtypes, empty result.
         labels = session_id(pd.Series(panel.index)).to_numpy()
         sessions = pd.Series(labels, index=panel.index)
-        crosses_session = (sessions.shift(-horizon) != sessions).to_numpy()
+        # The whole span from the signal bar t through the exit bar
+        # t + entry_lag + horizon must sit inside one session.
+        crosses_session = (sessions.shift(-(horizon + entry_lag)) != sessions).to_numpy()
         forward.loc[crosses_session, :] = np.nan
 
         if bool(crosses_session.all()):
             median_session = int(pd.Series(labels).value_counts().median())
             raise ValueError(
-                f"no within-session window exists at horizon={horizon}: the median "
+                f"no within-session window exists at horizon={horizon} with "
+                f"entry_lag={entry_lag}: the median "
                 f"session is {median_session} bars, so every {horizon}-bar forward "
                 "return crosses into the next session. This is not a bug -- it is "
                 "what a horizon at or beyond the session length means. Either "

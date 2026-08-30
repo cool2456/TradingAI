@@ -144,10 +144,67 @@ def test_within_session_masking_removes_overnight_windows() -> None:
         index=index, columns=["AAA", "BBB"],
     )
     for horizon in (30, 130):
-        masked = forward_returns(panel, horizon, within_session=True).notna().sum().sum()
-        unmasked = forward_returns(panel, horizon, within_session=False).notna().sum().sum()
-        assert masked == 3 * (390 - horizon) * 2
-        assert unmasked > masked
+        for entry_lag in (0, 1):
+            masked = forward_returns(panel, horizon, within_session=True,
+                                     entry_lag=entry_lag).notna().sum().sum()
+            unmasked = forward_returns(panel, horizon, within_session=False,
+                                       entry_lag=entry_lag).notna().sum().sum()
+            # A signal bar t is usable only if t + entry_lag + horizon is still
+            # inside the same session.
+            assert masked == 3 * (390 - horizon - entry_lag) * 2
+            assert unmasked > masked
+
+
+def test_entry_lag_shifts_the_return_window_off_the_signal_print() -> None:
+    """entry_lag=1 must measure from t+1, not from the bar the signal used.
+
+    Sharing the print ``P_t`` between the signal and the return's entry price
+    correlates them through the bid-ask bounce alone. This checks the arithmetic
+    that removes it.
+    """
+    index = pd.date_range("2024-03-01 14:30", periods=100, freq="min", tz="UTC")
+    prices = pd.DataFrame({"AAA": np.arange(100.0, 200.0)}, index=index)
+
+    lag0 = forward_returns(prices, horizon=10, within_session=False, entry_lag=0)
+    lag1 = forward_returns(prices, horizon=10, within_session=False, entry_lag=1)
+
+    # P_10/P_0 - 1 = 110/100 - 1
+    assert lag0["AAA"].iloc[0] == pytest.approx(110 / 100 - 1)
+    # P_11/P_1 - 1 = 111/101 - 1
+    assert lag1["AAA"].iloc[0] == pytest.approx(111 / 101 - 1)
+
+
+def test_bid_ask_bounce_manufactures_reversion_at_entry_lag_zero() -> None:
+    """The artifact, demonstrated on a pure random walk plus a bounce.
+
+    Prices are a driftless random walk observed with an alternating
+    half-spread, so there is no economic reversion whatsoever. Measured with
+    entry_lag=0 a reversion signal shows a large negative-lag correlation
+    purely from the shared print; at entry_lag=1 it collapses toward zero.
+    """
+    from quantlab.live.ic import compute_ic
+    from quantlab.signals import zscore_reversion
+
+    rng = np.random.default_rng(101)
+    n = 40000
+    index = pd.date_range("2024-03-01 00:00", periods=n, freq="min", tz="UTC")
+    efficient = 100 * np.exp(np.cumsum(rng.normal(0, 0.0002, size=(n, 6)), axis=0))
+    bounce = np.where(rng.random((n, 6)) < 0.5, 1.0, -1.0) * 0.0005
+    observed = pd.DataFrame(efficient * (1 + bounce), index=index,
+                            columns=[f"S{i}" for i in range(6)])
+
+    signal = zscore_reversion.bind(window=20)(observed)
+    contaminated = compute_ic(
+        signal, forward_returns(observed, 30, within_session=False, entry_lag=0),
+        30, residualise=False).ic
+    clean = compute_ic(
+        signal, forward_returns(observed, 30, within_session=False, entry_lag=1),
+        30, residualise=False).ic
+
+    assert contaminated > 0.05, f"expected a large spurious IC, got {contaminated:.4f}"
+    assert abs(clean) < contaminated / 2, (
+        f"entry_lag=1 left {clean:.4f} against a contaminated {contaminated:.4f}"
+    )
 
 
 def test_horizon_at_session_length_has_no_within_session_windows() -> None:

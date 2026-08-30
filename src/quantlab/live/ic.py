@@ -206,6 +206,10 @@ class ICResult:
 
     p_value_bh: float | None = None
     p_value_by: float | None = None
+    #: The same IC measured with entry_lag=0, where the signal's price is also
+    #: the return's entry price. Diagnostic only -- it is contaminated by the
+    #: bid-ask bounce and is never counted as a trial or reported as a finding.
+    ic_entry_lag0_DIAGNOSTIC: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -231,6 +235,44 @@ def _mean_pairwise_correlation(panel: pd.DataFrame) -> float:
     off_diagonal = corr[~np.eye(corr.shape[0], dtype=bool)]
     finite = off_diagonal[np.isfinite(off_diagonal)]
     return float(finite.mean()) if finite.size else 0.0
+
+
+def _newey_west_panel_se(panel: np.ndarray, lags: int) -> float:
+    """Newey-West SE of the pooled mean, correcting time but not the cross-section.
+
+    The middle rung of the three standard errors: it allows arbitrary serial
+    dependence within each symbol and assumes independence **across** symbols.
+    That is what "cluster by asset" buys, and reporting it beside the
+    Driscoll-Kraay figure shows what the independence assumption is worth.
+
+    Autocovariances for all lags are obtained by FFT rather than by looping.
+    At ``h = 390`` the truncation is 780 lags over ~98,000 timestamps and 100
+    symbols; the loop is 7.6e9 multiply-adds, the FFT is ``O(T log T)`` per
+    symbol and finishes in well under a second.
+    """
+    mask = np.isfinite(panel)
+    counts = mask.sum(axis=0).astype(float)
+    keep = counts > max(lags + 2, 10)
+    if not keep.any():
+        return float("nan")
+    panel, mask, counts = panel[:, keep], mask[:, keep], counts[keep]
+
+    means = np.where(mask, panel, 0.0).sum(axis=0) / counts
+    centered = np.where(mask, panel - means, 0.0)
+
+    n_rows = centered.shape[0]
+    n_fft = 1 << int(np.ceil(np.log2(max(2 * n_rows, 2))))
+    spectrum = np.fft.rfft(centered, n_fft, axis=0)
+    autocov = np.fft.irfft(spectrum * np.conj(spectrum), n_fft, axis=0)[: lags + 1]
+    autocov = autocov / counts
+
+    weights = 1.0 - np.arange(1, lags + 1) / (lags + 1.0)
+    long_run = autocov[0] + 2.0 * (weights[:, None] * autocov[1:]).sum(axis=0)
+    long_run = np.maximum(long_run, autocov[0])       # Bartlett can go negative
+
+    variance_of_symbol_mean = long_run / counts
+    share = counts / counts.sum()
+    return float(np.sqrt((share**2 * variance_of_symbol_mean).sum()))
 
 
 def compute_ic(
@@ -354,9 +396,11 @@ def compute_ic(
         # the IC itself.
         se_dk = newey_west_mean_se(period_mean.to_numpy(dtype=float), lags)
 
-    # --- Newey-West ignoring the cross-section (pools all cells as one series).
-    flat = products[finite]
-    se_nw = newey_west_mean_se(flat, min(lags, max(flat.size - 2, 1))) if flat.size > 5 else float("nan")
+    # --- Newey-West within each symbol, independence assumed across symbols.
+    # Applying a lag to the *flattened* panel would be meaningless: consecutive
+    # elements there are different symbols at the same timestamp, not the same
+    # symbol one bar apart.
+    se_nw = _newey_west_panel_se(products, lags)
 
     # --- Cluster by asset: allows serial dependence within a name, assumes
     # independence across names. Reported to show what that assumption buys.
@@ -505,7 +549,7 @@ class ICReport:
         columns = [
             "hypothesis_id", "signal", "horizon_bars", "ic", "t_iid", "t_hac",
             "n_raw", "n_effective", "n_effective_naive", "variance_inflation",
-            "p_value", "p_value_bh", "p_value_by", "note",
+            "p_value", "p_value_bh", "p_value_by", "ic_entry_lag0_DIAGNOSTIC", "note",
         ]
         return frame[columns].sort_values("p_value_by", na_position="last").reset_index(drop=True)
 
@@ -640,6 +684,8 @@ def run_ic_grid(
     residualise: bool = True,
     log: bool = True,
     session_length: int | None = 390,
+    entry_lag: int = 1,
+    diagnose_bounce: bool = True,
     verbose: bool = True,
 ) -> ICReport:
     """Run every pre-registered hypothesis against a price panel. **Step 5.**
@@ -676,8 +722,11 @@ def run_ic_grid(
         for horizon in entry["horizons_bars"]:
             require_registered(name, horizon, params, document=document)
 
-            within_session = session_length is None or horizon < session_length
-            forward = forward_returns(prices, horizon, within_session=within_session)
+            within_session = (
+                session_length is None or horizon + entry_lag <= session_length - 1
+            )
+            forward = forward_returns(prices, horizon, within_session=within_session,
+                                      entry_lag=entry_lag)
             result = compute_ic(
                 signal_panel, forward, horizon,
                 hypothesis_id=entry["id"], signal_name=name,
@@ -690,6 +739,17 @@ def run_ic_grid(
                     + "OVERNIGHT-INCLUSIVE: horizon >= session length, so this "
                       "measures a gap the intraday mechanism does not describe",
                 })
+            # Diagnostic only, never a trial and never eligible to be a finding:
+            # the same IC measured with entry_lag=0, where the signal's own
+            # print is also the return's entry price. The gap between the two
+            # is the bid-ask bounce artifact.
+            if diagnose_bounce and entry_lag > 0:
+                bounce_forward = forward_returns(prices, horizon,
+                                                 within_session=within_session, entry_lag=0)
+                bounce = compute_ic(signal_panel, bounce_forward, horizon,
+                                    residualise=residualise)
+                result = ICResult(**{**result.to_dict(),
+                                     "ic_entry_lag0_DIAGNOSTIC": bounce.ic})
             report.add(result)
 
             if verbose:
