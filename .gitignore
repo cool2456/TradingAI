@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+dist/
+*.egg-info/
+.DS_Store
+.hypothesis/
+.pytest_cache/
+
+# Credentials -- never committed, never logged, never written to disk.
+.env
+.env.*
+!.env.example
+
+# Market data cache (large, regenerable from the API).
+data/
