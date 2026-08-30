@@ -16,3 +16,5 @@ dist/
 
 # Market data cache (large, regenerable from the API).
 data/
+.env
+.env

@@ -1,0 +1,192 @@
+# Pre-registration. Committed BEFORE the backfill runs.
+#
+# Rules, enforced by quantlab.live.ic.require_registered():
+#   - No hypothesis is tested unless it appears here first.
+#   - `mechanism` must name who loses money and why they keep doing it.
+#     A mechanism of "the indicator works" is rejected at review, not tested.
+#   - Every test flips `status` and appends to research_log.jsonl.
+#
+# TRIAL BUDGET FOR THIS PHASE: 30.
+# Registered here: 7 signals x 3 horizons = 21 trials. 9 held in reserve.
+#
+# Note on the brief's arithmetic: it budgets "six signals across three
+# horizons is 18". quantlab.signals contains seven -- five research signals
+# and two mandatory controls. The controls are counted against the budget
+# rather than exempted: they are additional hypotheses about the data even
+# though their expected answer is zero, and exempting them would be the same
+# accounting dodge the research log exists to prevent.
+#
+# Note on dependence between H001 and H002: zscore_momentum is the exact
+# negative of zscore_reversion at matching parameters. Their default windows
+# differ (20 vs 60) so they are not exact mirrors here, but they remain
+# strongly negatively dependent. Benjamini-Hochberg controls FDR under
+# positive regression dependence; under negative dependence it is not
+# guaranteed. The IC report therefore also computes Benjamini-Yekutieli,
+# which is valid under arbitrary dependence, and reports both.
+
+meta:
+  phase: 2
+  question: >
+    Do any of the signals already in quantlab.signals have an information
+    coefficient reliably above zero on real market data, at a horizon where
+    costs do not eat it?
+  trial_budget: 30
+  registered_trials: 21
+  universe_definition: >
+    liquid_50 -- the 50 US equities with the highest median dollar volume over
+    the 30 calendar days ENDING at the backfill start date, selected from
+    Alpaca's currently-tradable US equity list. Ranking is as-of the start date
+    so liquidity selection contains no look-ahead. The candidate pool is
+    current membership, so names delisted since the start date are absent; this
+    survivorship bias is documented and not fixable with this data source.
+  horizons_rationale: >
+    30 bars (30 min) is short enough that microstructure effects dominate and
+    long enough to be executable. 130 bars (~2.2 hrs) is the holding period the
+    cost model makes tradeable. 390 bars (1 session) tests whether anything
+    survives to a horizon where the cost hurdle is negligible. Effective sample
+    size falls linearly in the horizon, so the longest horizon is also the
+    least measurable -- that trade-off is the subject of this phase.
+  returns: >
+    Forward returns are residualised by cross-sectional demeaning: for each
+    timestamp, subtract the equal-weight mean return across the universe. This
+    requires no estimated parameter and therefore introduces no look-ahead. It
+    is equivalent to assuming beta = 1 for every name. Raw and residual IC are
+    reported side by side.
+
+hypotheses:
+  - id: H001
+    signal: zscore_reversion
+    params: {window: 20, clip: 2.0}
+    horizons_bars: [30, 130, 390]
+    universe: liquid_50
+    prediction: "residual IC > 0.02 at h=130 with HAC t > 2 and BH-corrected p < 0.05"
+    mechanism: >
+      Intraday liquidity provision. Marketable order flow -- retail market
+      orders, and institutional executions that must complete on a schedule --
+      pushes price away from fair value inside the session. Market makers and
+      short-horizon traders absorb that flow and carry inventory risk while
+      doing so; the subsequent reversion is their compensation.
+      WHO LOSES: the liquidity demander, who pays spread plus impact.
+      WHY THEY KEEP DOING IT: they are buying immediacy, which has value to
+      them independent of price. A retail investor acting on a decision, or a
+      fund that must be flat by the close, is not trying to earn the spread and
+      is not making a mistake by paying it.
+      FALSIFIED IF: residual IC is indistinguishable from zero at every
+      horizon, or if it is positive gross and negative net of the cost model.
+    status: untested
+
+  - id: H002
+    signal: zscore_momentum
+    params: {window: 60, clip: 2.0}
+    horizons_bars: [30, 130, 390]
+    universe: liquid_50
+    prediction: >
+      residual IC <= 0 at h=30 and h=130. This is a directional prediction of
+      FAILURE, registered as such: at intraday horizons microstructure
+      reversion should dominate underreaction, so the momentum sign should be
+      the losing one. A positive IC here would falsify the H001 mechanism.
+    mechanism: >
+      Underreaction: information diffuses slowly through an investor base with
+      heterogeneous attention, so price adjusts over hours rather than instantly.
+      WHO LOSES: attention-constrained investors who update late, and investors
+      who trade on a fixed schedule rather than on news arrival.
+      WHY THEY KEEP DOING IT: attention is genuinely scarce and monitoring is
+      costly; scheduled rebalancing is cheaper than continuous monitoring.
+      This mechanism is well evidenced at horizons of months. At horizons of
+      minutes to hours it competes directly with the H001 mechanism and should
+      lose. Registered to test that ordering, not because it is expected to win.
+    status: untested
+
+  - id: H003
+    signal: timeseries_momentum
+    params: {window: 60}
+    horizons_bars: [30, 130, 390]
+    universe: liquid_50
+    prediction: "residual IC indistinguishable from zero at all three horizons"
+    mechanism: >
+      Persistent order-flow imbalance from institutional position building. A
+      parent order too large to execute at once is worked over hours or days,
+      creating a directional imbalance that pushes price the same way
+      repeatedly.
+      WHO LOSES: liquidity providers taking the other side of a persistent
+      informed imbalance, who are adversely selected.
+      WHY THEY KEEP DOING IT: they cannot distinguish informed persistent flow
+      from uninformed flow ex ante, and providing liquidity to both is
+      profitable on average.
+      The effect is documented at multi-day to multi-month horizons. A 60-bar
+      intraday window is far shorter than the horizon at which the mechanism
+      operates, so the honest prediction is null.
+    status: untested
+
+  - id: H004
+    signal: ma_crossover
+    params: {fast: 10, slow: 50}
+    horizons_bars: [30, 130, 390]
+    universe: liquid_50
+    prediction: "residual IC tracks H003 within 0.01; no independent signal"
+    mechanism: >
+      The same economic claim as H003 -- persistent order-flow imbalance --
+      expressed through a different filter. A moving-average crossover is a
+      band-pass filter on log price; time-series momentum is a step filter on
+      the same quantity.
+      This is registered explicitly as a ROBUSTNESS CHECK, not an independent
+      hypothesis. If H003 and H004 disagree materially, the difference is
+      attributable to filter choice rather than to economics, and that is
+      itself the finding. Counting it as a separate discovery would be double
+      counting one idea.
+      WHO LOSES / WHY: as H003.
+    status: untested
+
+  - id: H005
+    signal: vol_breakout
+    params: {window: 20}
+    horizons_bars: [30, 130, 390]
+    universe: liquid_50
+    prediction: "residual IC > 0 at h=30 only; decaying to zero by h=390"
+    mechanism: >
+      Stop-order cascades. Price leaving a well-established range triggers
+      resting stop orders and threshold-following algorithms, which become
+      marketable flow in the direction of the break and extend it briefly.
+      WHO LOSES: traders whose stops are triggered. By construction they sell
+      into weakness and buy into strength at the worst available moment.
+      WHY THEY KEEP DOING IT: a stop is risk management, not a forecast. The
+      expected cost is knowingly accepted as the price of bounding a loss, and
+      for a leveraged or capital-constrained trader that bound is worth more
+      than the expected cost.
+      The mechanism is mechanical and short-lived, so any IC should decay fast
+      with horizon. A flat IC across horizons would falsify the mechanism even
+      if the IC were positive.
+    status: untested
+
+  - id: H006
+    signal: random_signal
+    params: {seed: 0}
+    horizons_bars: [30, 130, 390]
+    universe: liquid_50
+    prediction: "residual IC = 0 within HAC error at every horizon"
+    mechanism: >
+      CONTROL. No mechanism by construction -- the signal is independent of
+      prices. Nobody loses money to it and nobody makes money from it before
+      costs.
+      Registered and counted against the trial budget rather than exempted. Its
+      purpose is to calibrate the measurement: if random_signal produces a
+      significant IC, the estimator is broken and every other row in the table
+      is void. It is the noise floor, and it is charged for like everything else.
+    status: untested
+
+  - id: H007
+    signal: always_long
+    params: {}
+    horizons_bars: [30, 130, 390]
+    universe: liquid_50
+    prediction: >
+      raw IC undefined (zero variance signal); residual IC = 0 by construction,
+      since a constant signal has no cross-sectional variation and residual
+      returns are cross-sectionally demeaned.
+    mechanism: >
+      CONTROL. Buy and hold -- the benchmark that requires no work and pays
+      cost once. It has no information coefficient because it has no variation;
+      it appears here so that the IC table and the Phase 1 ledger contain the
+      same set of names, and so that the degenerate case is handled explicitly
+      rather than crashing the estimator.
+    status: untested
