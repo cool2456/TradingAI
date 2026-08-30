@@ -212,6 +212,13 @@ class ICResult:
     #: the return's entry price. Diagnostic only -- it is contaminated by the
     #: bid-ask bounce and is never counted as a trial or reported as a finding.
     ic_entry_lag0_DIAGNOSTIC: float | None = None
+    #: The same IC measured WITHOUT residualising, against raw returns. Reported
+    #: beside the residual figure because the gap between them is how much of
+    #: any apparent signal is market beta rather than stock-specific
+    #: information. A signal whose raw IC greatly exceeds its residual IC is
+    #: mostly a market-timing bet wearing a cross-sectional costume.
+    ic_raw: float | None = None
+    t_hac_raw: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -549,7 +556,8 @@ class ICReport:
         if frame.empty:
             return frame
         columns = [
-            "hypothesis_id", "signal", "horizon_bars", "ic", "t_iid", "t_hac",
+            "hypothesis_id", "signal", "horizon_bars", "ic_raw", "ic", "t_hac_raw",
+            "t_iid", "t_hac",
             "n_raw", "n_effective", "n_effective_naive", "variance_inflation",
             "p_value", "p_value_bh", "p_value_by", "ic_entry_lag0_DIAGNOSTIC", "note",
         ]
@@ -752,6 +760,13 @@ def run_ic_grid(
                                     residualise=residualise)
                 result = ICResult(**{**result.to_dict(),
                                      "ic_entry_lag0_DIAGNOSTIC": bounce.ic})
+
+            # Raw (unresidualised) IC, reported beside the residual figure. The
+            # gap is the share of any apparent signal that is market beta.
+            if residualise:
+                raw = compute_ic(signal_panel, forward, horizon, residualise=False)
+                result = ICResult(**{**result.to_dict(),
+                                     "ic_raw": raw.ic, "t_hac_raw": raw.t_hac})
             report.add(result)
 
             if verbose:

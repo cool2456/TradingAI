@@ -13,14 +13,27 @@ none is stable across the sample.** The answer to the phase question -- *is
 there an information coefficient reliably above zero at a horizon where costs
 do not eat it* -- is **no**.
 
-| | signal | h (bars) | residual IC | IID t | **HAC t** | n_effective | BY p |
-|---|---|---:|---:|---:|---:|---:|---:|
-| H003 | timeseries_momentum | 30 | +0.0088 | +26.27 | **+3.14** | 128,669 | 0.0058 |
-| H001 | zscore_reversion | 130 | **−0.0082** | −20.74 | **−3.00** | 142,112 | 0.0099 |
-| H005 | vol_breakout | 130 | +0.0089 | +22.72 | **+2.85** | 101,854 | 0.0172 |
-| H002 | zscore_momentum | 130 | +0.0124 | +31.46 | **+2.75** | 55,114 | 0.0249 |
+| | signal | h (bars) | raw IC | raw HAC t | residual IC | IID t | **HAC t** | n_effective | BY p |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| H003 | timeseries_momentum | 30 | 0.0033 | +0.79 | +0.0088 | +26.27 | **+3.14** | 128,669 | 0.0058 |
+| H001 | zscore_reversion | 130 | −0.0050 | −1.25 | **−0.0082** | −20.74 | **−3.00** | 142,112 | 0.0099 |
+| H005 | vol_breakout | 130 | 0.0045 | +1.00 | +0.0089 | +22.72 | **+2.85** | 101,854 | 0.0172 |
+| H002 | zscore_momentum | 130 | 0.0038 | +0.61 | +0.0124 | +31.46 | **+2.75** | 55,114 | 0.0249 |
 
-Three reasons the four survivors do not constitute a finding:
+Four reasons the four survivors do not constitute a finding:
+
+**0. Nothing is significant before residualising.** Not one raw IC clears
+significance — the largest is |t| = 1.25 across all 21 tests. The effect exists
+only in the market-neutral residual, so capturing it requires a dollar-neutral
+long-short book across the full universe. Run long-only, there is no
+statistically detectable signal here at all.
+
+The brief expected residualising to *shrink* the IC by stripping out market
+beta. It does the opposite: the residual IC is larger than the raw IC in every
+case. Cross-sectional demeaning removes the dominant common factor, which for a
+cross-sectional signal is mostly noise, so it raises signal-to-noise rather
+than removing contamination. That makes the result more fragile, not less —
+it is conditional on being able to run market-neutral.
 
 **1. They vanish in the second half of the sample.** Every one is significant
 in the first six months and none in the second:
