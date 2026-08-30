@@ -1,9 +1,130 @@
 # quantlab
 
-A research system for developing and honestly evaluating a multi-strategy
-trading book under two constraints: **a hard budget of 3 trades per day across
-the entire portfolio**, and **regime-conditional strategy allocation** computed
-from causally available information only.
+A research system for measuring whether trading signals contain information,
+and for evaluating a multi-strategy book honestly when they do.
+
+---
+
+# PHASE 2 RESULT: no tradeable signal
+
+**Did step 5 find any signal clearing the FDR-corrected bar?**
+Four of 21 pre-registered tests cleared it. **None of them is tradeable, and
+none is stable across the sample.** The answer to the phase question -- *is
+there an information coefficient reliably above zero at a horizon where costs
+do not eat it* -- is **no**.
+
+| | signal | h (bars) | residual IC | IID t | **HAC t** | n_effective | BY p |
+|---|---|---:|---:|---:|---:|---:|---:|
+| H003 | timeseries_momentum | 30 | +0.0088 | +26.27 | **+3.14** | 128,669 | 0.0058 |
+| H001 | zscore_reversion | 130 | **−0.0082** | −20.74 | **−3.00** | 142,112 | 0.0099 |
+| H005 | vol_breakout | 130 | +0.0089 | +22.72 | **+2.85** | 101,854 | 0.0172 |
+| H002 | zscore_momentum | 130 | +0.0124 | +31.46 | **+2.75** | 55,114 | 0.0249 |
+
+Three reasons the four survivors do not constitute a finding:
+
+**1. They vanish in the second half of the sample.** Every one is significant
+in the first six months and none in the second:
+
+| signal | h | full year | H1 (Sep–Feb) | H2 (Mar–Aug) |
+|---|---:|---:|---:|---:|
+| timeseries_momentum | 30 | +0.0088 (t 3.14) | +0.0149 (t **4.51**) | +0.0030 (t 0.68) |
+| zscore_reversion | 130 | −0.0082 (t −3.00) | −0.0100 (t **−3.07**) | −0.0064 (t −1.49) |
+| vol_breakout | 130 | +0.0089 (t 2.85) | +0.0122 (t **3.29**) | +0.0058 (t 1.16) |
+| zscore_momentum | 130 | +0.0124 (t 2.75) | +0.0164 (t **3.15**) | +0.0086 (t 1.18) |
+
+By quarter the effect is concentrated almost entirely in Q2. The *sign* agrees
+with the full sample in 4 of 4 quarters for all four signals, which is more
+than noise would usually give, so this is not certainly nothing — but a full
+-sample t of 3.1 that is 4.5 in one half and 0.7 in the other is not an
+estimate of a stable quantity.
+
+**2. The break-even cost sits inside the realistic cost band.** A dollar
+-neutral book sized on the standardised signal earns `IC × σ_r` gross per round
+trip and pays `2 × c × E|z|`, so it breaks even at `c* = IC·σ_r / (2·E|z|)`:
+
+| signal | h | σ_r | gross / round trip | break-even one-way |
+|---|---:|---:|---:|---:|
+| zscore_momentum | 130 | 1.071% | 1.33 bp | **0.76 bp** |
+| zscore_reversion | 130 | 1.071% | 0.87 bp | 0.50 bp |
+| vol_breakout | 130 | 1.071% | 0.96 bp | 0.48 bp |
+| timeseries_momentum | 30 | 0.566% | 0.50 bp | 0.25 bp |
+
+Realistic all-in one-way cost for US large caps is 0.5–1.5 bp. The best
+break-even is 0.76 bp: it clears an optimistic 0.5 bp and fails at 1.0 bp. That
+is before market impact, implementation shortfall, and any capacity constraint.
+
+**3. It cannot be expressed under the trade budget.** Capturing an h=130 signal
+across 100 names needs roughly 300 order submissions per day. The system's
+budget is 3.
+
+### What *was* established
+
+The pre-registered mechanism for H001 is **refuted with a sign reversal**.
+H001 predicted intraday reversion from liquidity provision, `IC > +0.02`; the
+measured residual IC is `−0.0082` with HAC t = −3.00. H002, registered as a
+prediction of failure (`IC ≤ 0`), came in significantly *positive*. Both point
+the same way, because reversion is the negative of momentum: over this year,
+these names showed weak intraday **momentum**, not mean reversion. That is a
+genuine pre-registered refutation, and it is the phase's real output.
+
+Registered verdicts, graded mechanically against the registered direction:
+
+| | prediction | verdict |
+|---|---|---|
+| H001 | IC > 0.02 at h=130 | **falsified, sign reversal** |
+| H002 | IC ≤ 0 (registered failure) | **falsified, sign reversal** — a positive IC here falsifies the H001 mechanism, exactly as pre-registered |
+| H003 | null at all horizons | **falsified** — significant at h=30 |
+| H004 | tracks H003 within 0.01, no independent signal | **held** — h=130 IC 0.0089 vs H003's 0.0105, gap 0.0016 |
+| H005 | IC > 0 at h=30 only, decaying by h=390 | **sign held, pattern falsified** — the effect appears at h=130, not h=30 |
+| H006 | random_signal, IC = 0 | **held** — IC ≤ 0.0004, \|t\| ≤ 0.94 at every horizon |
+| H007 | always_long, IC undefined | **held** — zero-variance signal, no IC exists |
+
+**Effective sample size behind the claims: 47,901 to 142,112** against 6.5–9.0
+million raw observations. The measured variance inflation runs 40× to 158×.
+Both controls behaved: `random_signal` returned IC ≤ 0.0004 with n_effective
+≈ 9,000,000 — essentially its raw count, because an iid signal suffers no
+inflation, which is the mechanism check.
+
+**Trial count: 29. Deflated-Sharpe luck threshold: 3.37 annualised Sharpe.**
+Read from `research_log.jsonl`; refresh with
+`python -c "from quantlab.validate import trial_count, current_threshold; print(trial_count(), current_threshold(2500)['luck_threshold_ann'])"`.
+
+### Caveats that bound every number above
+
+- **Data is historical SIP; live data would be IEX.** Alpaca's free tier serves
+  real time from IEX only — roughly 2% of US equity volume with quotes wider
+  than the NBBO. Nothing here was measured on IEX, and nothing should be.
+- **Alpaca's paper engine fills optimistically**: no queue position, no partial
+  fills, no market impact. Paper slippage is a *lower bound* on real slippage.
+  Passing paper is necessary and not sufficient.
+- **The universe is survivorship-biased.** It was ranked by liquidity as of the
+  backfill start date, which removes look-ahead from the *ranking*, but the
+  candidate pool is Alpaca's current membership. Any name delisted between
+  2025-08-30 and today is absent. Not fixable with this data source.
+- **This system has never traded real money.** There is no live endpoint, no
+  live keys, and no configuration path that reaches one; `config.py` refuses
+  the live URL by validator. A backtest is a hypothesis, not a result.
+
+### The measurement corrections, and what each was worth
+
+| correction | effect on the answer |
+|---|---|
+| **Entry lag** (`P_{t+1+h}/P_{t+1}`, not `P_{t+h}/P_t`) | On a driftless random walk seen through an alternating half-spread — true reversion exactly zero — the naive form gives **IC +0.2731 at HAC t +69.50**. With entry_lag=1: −0.0013, t −0.32. Largest correction in the project, and no standard error fixes it: it is a bias in the estimate, not its variance. On these very liquid names at 1-minute bars it happened to change little (spreads are tiny relative to 1-minute volatility), but that is an empirical accident, not a reason to omit it. |
+| **HAC vs IID standard errors** | IID t-statistics run **8–11× the HAC values** on this data (zscore_momentum h=130: IID +31.46 vs HAC +2.75). Under a synthetic null the IID SE rejects on **63–71%** of samples at a nominal 5%; Driscoll-Kraay brings that to 5–9%. |
+| **Residualising** | Raw returns have mean pairwise correlation +0.131, giving N_eff of **7.2** of 100 names. Cross-sectional demeaning takes that to +0.0037 and N_eff **72.9**. Breadth is worth 10× more after residualising — this is what made a one-year study feasible at all. |
+| **Fund exclusion** | The unfiltered liquidity ranking was ~40% ETFs including TQQQ, SQQQ, SOXL, SOXS. A 3× daily ETF's "reversion" is volatility-decay rebalancing, and SPY/VOO/IVV *are* the factor being residualised against. |
+
+---
+
+# PHASE 1: regime-conditional multi-strategy evaluation
+
+Evaluating a multi-strategy book under **a hard budget of 3 trades per day
+across the entire portfolio** and **regime-conditional strategy allocation**
+computed from causally available information only.
+
+> **Status after Phase 2: `regime_tier` now defaults to 0 (fixed weights).**
+> Tier 2 remains implemented and tested but is not deployed. See the Phase 1
+> headline finding below for why.
 
 ---
 

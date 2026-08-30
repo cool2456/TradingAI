@@ -112,6 +112,8 @@ __all__ = [
     "benjamini_hochberg",
     "benjamini_yekutieli",
     "load_hypotheses",
+    "predicted_direction",
+    "mark_tested",
     "require_registered",
     "HYPOTHESES_PATH",
 ]
@@ -780,13 +782,39 @@ def run_ic_grid(
     return report.apply_corrections()
 
 
+def predicted_direction(prediction: str) -> Literal["positive", "non_positive", "null"]:
+    """Extract the registered directional claim from a prediction string.
+
+    Deliberately crude and auditable rather than clever: the prediction strings
+    were written by hand at registration time and use three unambiguous forms.
+    Getting this wrong in the permissive direction is how a sign reversal gets
+    reported as a confirmation.
+    """
+    text = prediction.lower()
+    if "indistinguishable from zero" in text or "= 0 within" in text or "= 0 by construction" in text:
+        return "null"
+    if "<= 0" in text or "ic <= 0" in text:
+        return "non_positive"
+    if "ic > " in text or "> 0" in text:
+        return "positive"
+    return "null"
+
+
 def mark_tested(
     report: ICReport, path: Path | str = HYPOTHESES_PATH
 ) -> dict[str, str]:
-    """Flip each tested hypothesis's ``status`` from ``untested`` to its verdict.
+    """Flip each tested hypothesis's ``status`` to a factual verdict.
 
-    Verdicts are assigned mechanically from the corrected p-values so the
-    author cannot grade their own homework after seeing the numbers.
+    Verdicts are assigned mechanically from the corrected p-values **and the
+    registered direction**, so the author cannot grade their own homework after
+    seeing the numbers.
+
+    The direction check is not optional. A two-sided test rejects when the
+    effect is significant in *either* direction, so a hypothesis predicting
+    ``IC > 0.02`` that measures a significant ``-0.008`` would otherwise be
+    recorded as "supported" -- when in fact its prediction is falsified and the
+    opposite effect is present. That is the single easiest way to turn a
+    refutation into a confirmation, and it is checked explicitly.
     """
     import yaml
 
@@ -799,16 +827,38 @@ def mark_tested(
         rows = frame[frame["hypothesis_id"] == entry["id"]]
         if rows.empty:
             continue
-        survived = rows[rows["p_value_by"].notna() & (rows["p_value_by"] < report.alpha)]
-        if survived.empty:
-            verdict = "falsified: no horizon cleared the FDR-corrected bar"
+        direction = predicted_direction(str(entry.get("prediction", "")))
+        significant = rows[rows["p_value_by"].notna() & (rows["p_value_by"] < report.alpha)]
+
+        if significant.empty:
+            if direction == "null":
+                verdict = (
+                    "PREDICTION HELD: no horizon showed a significant IC, which is "
+                    "what was registered"
+                )
+            else:
+                verdict = "FALSIFIED: no horizon cleared the FDR-corrected bar"
         else:
-            best = survived.sort_values("p_value_by").iloc[0]
-            verdict = (
-                f"supported at h={int(best['horizon_bars'])}: IC={best['ic']:.4f}, "
-                f"HAC t={best['t_hac']:.2f}, BY p={best['p_value_by']:.4f}, "
-                f"n_effective={best['n_effective']:.0f}"
+            best = significant.reindex(significant["p_value_by"].sort_values().index).iloc[0]
+            ic, horizon = float(best["ic"]), int(best["horizon_bars"])
+            detail = (
+                f"IC={ic:+.4f}, HAC t={best['t_hac']:.2f}, BY p={best['p_value_by']:.4f}, "
+                f"n_effective={best['n_effective']:.0f} at h={horizon}"
             )
+            sign_ok = (
+                (direction == "positive" and ic > 0)
+                or (direction == "non_positive" and ic <= 0)
+            )
+            if direction == "null":
+                verdict = f"FALSIFIED: registered as null, but a significant IC was found -- {detail}"
+            elif sign_ok:
+                verdict = f"SUPPORTED in sign -- {detail}"
+            else:
+                verdict = (
+                    f"FALSIFIED WITH SIGN REVERSAL: the prediction was "
+                    f"{entry['prediction'].strip()[:60]!r}, and the measured effect is "
+                    f"significant in the OPPOSITE direction -- {detail}"
+                )
         entry["status"] = verdict
         verdicts[entry["id"]] = verdict
 
